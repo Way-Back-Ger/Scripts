@@ -1,0 +1,153 @@
+# ===============================================================
+# ClassicAssist Auto-Mining mit Skill- & Fortschritts-Tracking &
+# Pathfinding zur nächsten Schmelze mit Zeitstempel-Sitzungscheck
+# Fortschritts-Datei: scripts/mining_progress.txt
+# Format: start_skill,successful_hits,misses,timestamp
+# 
+# © 2025 PO Feluc Vincenzo - Lord of War
+# ===============================================================
+
+import time
+
+step_counter = 0
+direction = 'east'
+skill_gains = 0
+mining_active = False
+walk_active = False  # Bewegung zur Schmelze
+
+# === Fortschritt laden ===
+def load_progress():
+    try:
+        with open("scripts/mining_progress.txt", "r") as f:
+            line = f.read().strip()
+            parts = line.split(",")
+            if len(parts) == 5:
+                start_skill = float(parts[0])
+                current_skill = float(parts[1])
+                hits = int(parts[2])
+                misses = int(parts[3])
+                timestamp = int(parts[4])
+                if time.time() - timestamp > 3600:
+                    # Sitzung zu alt: von vorne beginnen, aber Skill um -1.8 korrigieren (real skill offset)
+                    skill = round(Skill("Bergbau") - 1.8, 1)
+                    return skill, skill, 0, 0
+                else:
+                    return start_skill, current_skill, hits, misses
+    except:
+        pass
+    # Fallback
+    skill = round(Skill("Bergbau") - 1.8, 1)
+    return skill, skill, 0, 0
+
+# === Fortschritt speichern ===
+def save_progress(start_skill, current_skill, hits, misses):
+    timestamp = int(time.time())
+    with open("scripts/mining_progress.txt", "w") as f:
+        f.write("{:.1f},{:.1f},{},{},{}".format(start_skill, current_skill, hits, misses, timestamp))
+
+
+# === Mining-Ergebnis abwarten ===
+def wait_for_result(timeout_ms=15000):
+    SetTimer("mining_result")
+    while Timer("mining_result") < timeout_ms:
+        if InJournal("You put the"):
+            ClearJournal()
+            return "success"
+        elif InJournal("You loosen some rocks"):
+            ClearJournal()
+            return "miss"
+        elif InJournal("There is no ore here to mine.") or InJournal("You can't mine there."):
+            ClearJournal()
+            return "empty"
+        elif InJournal("Unexpected target info"):
+            ClearJournal()
+            return "error"
+        Pause(50)
+    return "timeout"
+
+# === Initialisierung ===
+start_skill, current_skill, successful_hits, misses = load_progress()
+save_progress(start_skill, current_skill, successful_hits, misses)
+
+HeadMsg("Mining gestartet (Skill: {:.1f})".format(start_skill), "self", 65)
+SetTimer("progress")
+
+# === Hauptloop ===
+while True:
+
+    if Weight() >= 400:
+        HeadMsg("Fertig – Gewicht erreicht!", "self", 33)
+        current_skill = Skill("Bergbau")
+        save_progress(start_skill, current_skill, successful_hits, misses)
+
+        SetForceWalk(True)
+        Pathfind(1827, 1029, 0)
+        walk_active = True
+
+        SetTimer("walk_wait")
+        while walk_active:
+            if Timer("walk_wait") > 10000:
+                HeadMsg("Ankunft an der Schmelze angenommen!", "self", 40)
+                walk_active = False
+            else:
+                Pause(200)
+
+        SetForceWalk(False)
+        break
+
+    if not mining_active:
+        ClearJournal()
+        UseObject(0x401292a1)  # Schaufel-ID
+        if not WaitForTarget(1000):
+            HeadMsg("Zielsystem nicht bereit – übersprungen", "self", 33)
+            Pause(2000)
+            continue
+        TargetTileRelative("self", 0, 0, False)
+        mining_active = True
+
+    result = wait_for_result()
+
+    if result == "success":
+        successful_hits += 1
+        HeadMsg("Erz gefunden! Gesamt: {}".format(successful_hits), "self", 65)
+        mining_active = False
+
+    elif result == "miss":
+        misses += 1
+        HeadMsg("Fehlversuch. Misses: {}".format(misses), "self", 45)
+        mining_active = False
+
+    elif result == "empty":
+        Walk(direction)
+        step_counter += 1
+        mining_active = False
+
+    elif result == "error":
+        HeadMsg("Unerwartete Ziel-Info", "self", 33)
+        Pause(2000)
+        mining_active = False
+
+    elif result == "timeout":
+        HeadMsg("Timeout – kein Mining-Ergebnis", "self", 33)
+        Pause(2000)
+        mining_active = False
+
+    # Fortschrittsanzeige alle 2 Minuten
+    if Timer("progress") >= 120000:
+        current_skill = Skill("Bergbau")
+        current_real = round(Skill("Bergbau") - 1.8, 1)  # Korrekturwert auf 1 Nachkommastelle gerundet
+        gained = round((current_skill - start_skill) - 1.8, 1)
+        HeadMsg("Bergbau +{:.1f} % | Ist: {:.1f} | Hits: {} | Misses: {}".format(
+            gained, current_real, successful_hits, misses), "self", 88)
+        save_progress(start_skill, current_skill, successful_hits, misses)
+        SetTimer("progress")
+
+    # Richtung wechseln nach 5 Schritten
+    if step_counter >= 5:
+        step_counter = 0
+        Walk("south")
+        Pause(600)
+        Walk("south")
+        direction = "west" if direction == "east" else "east"
+
+    Pause(500)

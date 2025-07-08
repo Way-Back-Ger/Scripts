@@ -15,10 +15,10 @@ import time
 # === KONFIGURATION ===
 GRID_FILE = "scripts/mine_grid_sorted_snake.txt"
 PROGRESS_FILE = "scripts/mining_progress.txt"
-SHOVEL_ID = 0x401292a1  # Anpassen falls nötig
+SHOVEL_ID = 0x401292a1
 MAX_WEIGHT = 400
 PAUSE_BETWEEN_TILES = 500
-PROGRESS_TIMER = 120000 # Timer für den Fortschritt
+PROGRESS_TIMER = 120000  # 2 Minuten
 
 # === Fortschritt ===
 def load_progress():
@@ -26,7 +26,6 @@ def load_progress():
         with open(PROGRESS_FILE, "r") as f:
             line = f.read().strip()
             parts = line.split(",")
-            # jetzt erwarten wir 7 Teile: start_skill, current_skill, hits, misses, timestamp, last_x, last_y
             if len(parts) == 7:
                 start_skill = float(parts[0])
                 current_skill = float(parts[1])
@@ -35,29 +34,28 @@ def load_progress():
                 timestamp = int(parts[4])
                 last_x = int(parts[5])
                 last_y = int(parts[6])
-                if time.time() - timestamp > 3600:
+                if time.time() - timestamp > 7200:
+                    # Reset nach 2h
                     skill = round(Skill("Bergbau") - 1.8, 1)
                     return skill, skill, 0, 0, None, None
                 else:
                     return start_skill, current_skill, hits, misses, last_x, last_y
     except:
         pass
+    # Standardstart
     skill = round(Skill("Bergbau") - 1.8, 1)
     return skill, skill, 0, 0, None, None
 
-def save_progress(start_skill, current_skill, hits, misses, last_x=None, last_y=None):
+def save_progress(start_skill, current_skill, hits, misses, last_x=0, last_y=0):
     try:
         timestamp = int(time.time())
-        # Wenn keine Position angegeben, schreiben wir 0,0 als Platzhalter
-        lx = last_x if last_x is not None else 0
-        ly = last_y if last_y is not None else 0
         with open(PROGRESS_FILE, "w") as f:
             f.write("{:.1f},{:.1f},{},{},{},{},{}".format(
-                start_skill, current_skill, hits, misses, timestamp, lx, ly))
+                start_skill, current_skill, hits, misses, timestamp, last_x, last_y))
     except:
         HeadMsg("Fehler beim Speichern des Fortschritts!", "self", 33)
 
-# === Initialisierung Fortschritt ===
+# === Initialisierung ===
 start_skill, current_skill, successful_hits, misses, last_x, last_y = load_progress()
 SetTimer("progress_timer")
 
@@ -80,7 +78,7 @@ def wait_for_mining_result(timeout_ms=15000):
         Pause(50)
     return "timeout"
 
-def mine_until_depleted():
+def mine_until_depleted(x, y):
     global successful_hits, misses, current_skill
 
     attempts = 0
@@ -119,14 +117,15 @@ def mine_until_depleted():
             HeadMsg("Unbekanntes Ergebnis: {}".format(result), "self", 33)
             break
 
-        # Fortschritt unabhängig anzeigen und speichern
+        # Fortschritt speichern
         if Timer("progress_timer") >= PROGRESS_TIMER:
-            current_skill = round(Skill("Bergbau") -1.8, 1)
+            current_skill = round(Skill("Bergbau") - 1.8, 1)
             gained = round(current_skill - start_skill, 1)
-            HeadMsg("Bergbau +{:.1f} % | Ist: {:.1f} | Hits: {} | Misses: {}".format(gained, current_skill, successful_hits, misses), "self", 88)
-            save_progress(start_skill, current_skill, successful_hits, misses)
+            HeadMsg("Bergbau +{:.1f} % | Ist: {:.1f} | Hits: {} | Misses: {}".format(
+                gained, current_skill, successful_hits, misses), "self", 88)
             SetTimer("progress_timer")
 
+        save_progress(start_skill, current_skill, successful_hits, misses, x, y)
         attempts += 1
         Pause(300)
 
@@ -134,7 +133,7 @@ def mine_until_depleted():
 def move_to(x, y):
     Pathfind(x, y, 0)
     SetTimer("walk")
-    while Timer("walk") < 5000:
+    while Timer("walk") < 10000:
         if X("self") == x and Y("self") == y:
             return True
         Pause(100)
@@ -153,62 +152,43 @@ def start_mining_route():
     total = len(lines)
     HeadMsg("Starte Mining-Route mit {} Feldern.".format(total), "self", 88)
 
-    # Bestimmen Startindex basierend auf last_x,last_y oder auf aktuelle Position
-    start_x, start_y = None, None
+    start_x, start_y = (last_x, last_y) if last_x and last_y else (X("self"), Y("self"))
 
-    if last_x is not None and last_y is not None and (last_x != 0 or last_y != 0):
-        start_x, start_y = last_x, last_y
-        HeadMsg("Fortsetzung ab gespeicherter Position {},{}".format(start_x, start_y), "self", 88)
-    else:
-        start_x, start_y = X("self"), Y("self")
-        HeadMsg("Start von aktueller Position {},{}".format(start_x, start_y), "self", 88)
-
+    # Startindex finden
     start_index = 0
     for i, line in enumerate(lines):
-        parts = line.strip().split(",")
-        if len(parts) != 2:
-            continue
         try:
-            x = int(parts[0])
-            y = int(parts[1])
+            x, y = map(int, line.strip().split(","))
             if x == start_x and y == start_y:
                 start_index = i
                 break
         except:
             continue
 
+    # Mining-Schleife
     for line in lines[start_index:]:
-        parts = line.strip().split(",")
-        if len(parts) != 2:
-            continue
         try:
-            x = int(parts[0])
-            y = int(parts[1])
+            x, y = map(int, line.strip().split(","))
         except:
             continue
 
         if Weight() >= MAX_WEIGHT:
             HeadMsg("Gewicht erreicht – Rückweg.", "self", 33)
-            current_skill = Skill("Bergbau")
-            # Position speichern beim Gewicht-Limit
-            save_progress(start_skill, current_skill, successful_hits, misses, x, y)
+            save_progress(start_skill, Skill("Bergbau"), successful_hits, misses, x, y)
 
             SetForceWalk(True)
             Pathfind(1827, 1029, 0)
-            walk_active = True
-
             SetTimer("walk_wait")
-            while walk_active:
-                if Timer("walk_wait") > 10000:
-                    HeadMsg("Ankunft an der Schmelze angenommen!", "self", 40)
-                    walk_active = False
-                else:
-                    Pause(200)
+            while Timer("walk_wait") < 10000:
+                if X("self") == 1827 and Y("self") == 1029:
+                    HeadMsg("Ankunft an der Schmelze!", "self", 40)
+                    break
+                Pause(200)
             SetForceWalk(False)
             break
 
         if move_to(x, y):
-            mine_until_depleted()
+            mine_until_depleted(x, y)
             Pause(PAUSE_BETWEEN_TILES)
 
     HeadMsg("Mining-Route beendet.", "self", 88)

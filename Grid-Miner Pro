@@ -1,0 +1,217 @@
+# ===============================================================
+# ClassicAssist Auto-Mining mit Grid Navigation, Skill- & 
+# Fortschritts-Tracking & Pathfinding zur nächsten Schmelze 
+# mit Zeitstempel-Sitzungscheck
+# 
+# benötigte Files werden beim starten Angelegt
+#
+# © 2025 PO Feluc Vincenzo - Lord of War
+# ===============================================================
+
+from Assistant import Engine
+from System import Convert
+import time
+
+# === KONFIGURATION ===
+GRID_FILE = "scripts/mine_grid_sorted_snake.txt"
+PROGRESS_FILE = "scripts/mining_progress.txt"
+SHOVEL_ID = 0x401292a1  # Anpassen falls nötig
+MAX_WEIGHT = 400
+PAUSE_BETWEEN_TILES = 500
+PROGRESS_TIMER = 120000 # Timer für den Fortschritt
+
+# === Fortschritt ===
+def load_progress():
+    try:
+        with open(PROGRESS_FILE, "r") as f:
+            line = f.read().strip()
+            parts = line.split(",")
+            # jetzt erwarten wir 7 Teile: start_skill, current_skill, hits, misses, timestamp, last_x, last_y
+            if len(parts) == 7:
+                start_skill = float(parts[0])
+                current_skill = float(parts[1])
+                hits = int(parts[2])
+                misses = int(parts[3])
+                timestamp = int(parts[4])
+                last_x = int(parts[5])
+                last_y = int(parts[6])
+                if time.time() - timestamp > 3600:
+                    skill = round(Skill("Bergbau") - 1.8, 1)
+                    return skill, skill, 0, 0, None, None
+                else:
+                    return start_skill, current_skill, hits, misses, last_x, last_y
+    except:
+        pass
+    skill = round(Skill("Bergbau") - 1.8, 1)
+    return skill, skill, 0, 0, None, None
+
+def save_progress(start_skill, current_skill, hits, misses, last_x=None, last_y=None):
+    try:
+        timestamp = int(time.time())
+        # Wenn keine Position angegeben, schreiben wir 0,0 als Platzhalter
+        lx = last_x if last_x is not None else 0
+        ly = last_y if last_y is not None else 0
+        with open(PROGRESS_FILE, "w") as f:
+            f.write("{:.1f},{:.1f},{},{},{},{},{}".format(
+                start_skill, current_skill, hits, misses, timestamp, lx, ly))
+    except:
+        HeadMsg("Fehler beim Speichern des Fortschritts!", "self", 33)
+
+# === Initialisierung Fortschritt ===
+start_skill, current_skill, successful_hits, misses, last_x, last_y = load_progress()
+SetTimer("progress_timer")
+
+# === Mining-Logik ===
+def wait_for_mining_result(timeout_ms=15000):
+    SetTimer("mine_result")
+    while Timer("mine_result") < timeout_ms:
+        if InJournal("You put the"):
+            ClearJournal()
+            return "success"
+        elif InJournal("You loosen some rocks"):
+            ClearJournal()
+            return "fail"
+        elif InJournal("There is no ore here") or InJournal("You can't mine there."):
+            ClearJournal()
+            return "empty"
+        elif InJournal("Unexpected target"):
+            ClearJournal()
+            return "invalid"
+        Pause(50)
+    return "timeout"
+
+def mine_until_depleted():
+    global successful_hits, misses, current_skill
+
+    attempts = 0
+    max_attempts = 10
+
+    while attempts < max_attempts:
+        if Weight() >= MAX_WEIGHT:
+            HeadMsg("Gewicht erreicht während Mining.", "self", 33)
+            return
+
+        ClearJournal()
+        UseObject(SHOVEL_ID)
+        if not WaitForTarget(1000):
+            HeadMsg("Target nicht bereit", "self", 33)
+            return
+
+        TargetTileOffsetResource(-1, 0, 0)
+        result = wait_for_mining_result()
+
+        if result == "success":
+            successful_hits += 1
+            HeadMsg("Erz gefunden!", "self", 65)
+        elif result == "fail":
+            misses += 1
+            HeadMsg("Fehlversuch.", "self", 45)
+        elif result == "empty":
+            HeadMsg("Feld erschöpft – weiter.", "self", 50)
+            break
+        elif result == "timeout":
+            HeadMsg("Timeout beim Mining.", "self", 33)
+            break
+        elif result == "invalid":
+            HeadMsg("Ungültiges Ziel.", "self", 33)
+            break
+        else:
+            HeadMsg("Unbekanntes Ergebnis: {}".format(result), "self", 33)
+            break
+
+        # Fortschritt unabhängig anzeigen und speichern
+        if Timer("progress_timer") >= PROGRESS_TIMER:
+            current_skill = round(Skill("Bergbau") -1.8, 1)
+            gained = round(current_skill - start_skill, 1)
+            HeadMsg("Bergbau +{:.1f} % | Ist: {:.1f} | Hits: {} | Misses: {}".format(gained, current_skill, successful_hits, misses), "self", 88)
+            save_progress(start_skill, current_skill, successful_hits, misses)
+            SetTimer("progress_timer")
+
+        attempts += 1
+        Pause(300)
+
+# === Bewegung ===
+def move_to(x, y):
+    Pathfind(x, y, 0)
+    SetTimer("walk")
+    while Timer("walk") < 5000:
+        if X("self") == x and Y("self") == y:
+            return True
+        Pause(100)
+    HeadMsg("Konnte Koordinate nicht erreichen: {}, {}".format(x, y), "self", 33)
+    return False
+
+# === Hauptlogik ===
+def start_mining_route():
+    try:
+        with open(GRID_FILE, "r") as f:
+            lines = f.readlines()
+    except:
+        HeadMsg("Datei {} nicht gefunden.".format(GRID_FILE), "self", 44)
+        return
+
+    total = len(lines)
+    HeadMsg("Starte Mining-Route mit {} Feldern.".format(total), "self", 88)
+
+    # Bestimmen Startindex basierend auf last_x,last_y oder auf aktuelle Position
+    start_x, start_y = None, None
+
+    if last_x is not None and last_y is not None and (last_x != 0 or last_y != 0):
+        start_x, start_y = last_x, last_y
+        HeadMsg("Fortsetzung ab gespeicherter Position {},{}".format(start_x, start_y), "self", 88)
+    else:
+        start_x, start_y = X("self"), Y("self")
+        HeadMsg("Start von aktueller Position {},{}".format(start_x, start_y), "self", 88)
+
+    start_index = 0
+    for i, line in enumerate(lines):
+        parts = line.strip().split(",")
+        if len(parts) != 2:
+            continue
+        try:
+            x = int(parts[0])
+            y = int(parts[1])
+            if x == start_x and y == start_y:
+                start_index = i
+                break
+        except:
+            continue
+
+    for line in lines[start_index:]:
+        parts = line.strip().split(",")
+        if len(parts) != 2:
+            continue
+        try:
+            x = int(parts[0])
+            y = int(parts[1])
+        except:
+            continue
+
+        if Weight() >= MAX_WEIGHT:
+            HeadMsg("Gewicht erreicht – Rückweg.", "self", 33)
+            current_skill = Skill("Bergbau")
+            # Position speichern beim Gewicht-Limit
+            save_progress(start_skill, current_skill, successful_hits, misses, x, y)
+
+            SetForceWalk(True)
+            Pathfind(1827, 1029, 0)
+            walk_active = True
+
+            SetTimer("walk_wait")
+            while walk_active:
+                if Timer("walk_wait") > 10000:
+                    HeadMsg("Ankunft an der Schmelze angenommen!", "self", 40)
+                    walk_active = False
+                else:
+                    Pause(200)
+            SetForceWalk(False)
+            break
+
+        if move_to(x, y):
+            mine_until_depleted()
+            Pause(PAUSE_BETWEEN_TILES)
+
+    HeadMsg("Mining-Route beendet.", "self", 88)
+
+# === Start ===
+start_mining_route()

@@ -1,0 +1,46 @@
+# ===============================================================
+# ClassicAssist Mine Grid Coordinator - erzeugt aus den Koordinaten
+# ein Snake Muster 
+# Input: scripts/mine_grid.txt
+# Output: scripts/mine_grid_sorted_snake.txt
+# 
+# © 2025 PO Feluc Vincenzo - Lord of War
+# ===============================================================
+
+def sort_mine_grid_snake(input_file="scripts/mine_grid.txt", output_file="scripts/mine_grid_sorted_snake.txt"):
+    rows = {}  # normales Dictionary verwenden
+
+    # Koordinaten einlesen und nach Y gruppieren
+    with open(input_file, "r") as f:
+        for line in f:
+            parts = line.strip().split(",")
+            if len(parts) == 2:
+                try:
+                    x = int(parts[0])
+                    y = int(parts[1])
+                    if y not in rows:
+                        rows[y] = []
+                    rows[y].append(x)
+                except:
+                    continue
+
+    # Y-Werte sortieren
+    sorted_y = sorted(rows.keys())
+    ordered_coords = []
+
+    for index, y in enumerate(sorted_y):
+        x_list = sorted(rows[y])
+        if index % 2 == 1:
+            x_list.reverse()  # Snake-Muster: jede 2. Zeile rückwärts
+        for x in x_list:
+            ordered_coords.append((x, y))
+
+    # In neue Datei schreiben
+    with open(output_file, "w") as f:
+        for x, y in ordered_coords:
+            f.write("{},{}\n".format(x, y))
+
+    HeadMsg("Snake-Muster gespeichert: {} Positionen.".format(len(ordered_coords)), "self", 65)
+
+# === Script ausführen ===
+sort_mine_grid_snake()

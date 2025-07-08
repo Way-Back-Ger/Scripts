@@ -1,0 +1,42 @@
+# ===============================================================
+# ClassicAssist Mine Coordinate Logger - beim Abschreiten der
+# Mine wird jeder Koordinate erfasst
+#
+# Log-Datei: scripts/position_log.txt
+# 
+# © 2025 PO Feluc Vincenzo - Lord of War
+# ===============================================================
+
+from Assistant import Engine
+import time
+
+def log_position(filename="scripts/position_log.txt", interval=3):
+    seen_positions = set()
+
+    # Vorherige Einträge laden
+    try:
+        with open(filename, "r") as f:
+            for line in f:
+                seen_positions.add(line.strip())
+    except:
+        pass
+
+    HeadMsg("Positions-Logger gestartet", "self", 65)
+
+    while True:
+        x = Engine.Player.X
+        y = Engine.Player.Y
+        coord = "{},{}".format(x, y)
+
+        if coord not in seen_positions:
+            seen_positions.add(coord)
+            with open(filename, "a") as f:
+                f.write(coord + "\n")
+            HeadMsg("Neue Position gespeichert: {}".format(coord), "self", 88)
+        else:
+            HeadMsg("Bereits bekannt: {}".format(coord), "self", 45)
+
+        Pause(interval * 100)
+
+# === Scriptstart ===
+log_position("scripts/mine_grid.txt", 3)

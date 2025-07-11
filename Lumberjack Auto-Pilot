@@ -1,0 +1,381 @@
+# ===============================================================
+# ClassicAssist Lumberjacking Auto Pilot 
+# Fortschritts-Tracking & Pathfinding zur Truhe & zurück 
+# 
+# benötigte Files werden beim starten Angelegt
+#
+# © 2025 PO Feluc Vincenzo - Lord of War
+# ===============================================================
+
+from ClassicAssist.UO.Data import Statics
+from ClassicAssist.UO import UOMath
+from Assistant import Engine
+from System import Convert
+import time
+import clr
+clr.AddReference('System.Core')
+
+# === KONFIGURATION ===
+packAnimals = []  # Beispiel: [0xf5313]
+logs = [0x1bdd]  # Item-ID für normale Logs
+dropLogs = False
+moveLogsToPackAnimal = False
+
+MAX_WEIGHT = 400
+PROGRESS_INTERVAL = 120000  # alle 2 Minuten Fortschrittsanzeige
+MAX_DIST_TO_CHEST = 20      # Max Distanz, um direkt zur Truhe zu laufen
+STEP_SIZE = 10              # Schritte pro Zwischenziel
+MAX_RANGE = 10              # Radius um Spieler, in dem Bäume gesucht werden
+
+# Koordinaten der Truhe (ersetzen!)
+CHEST_X = 1871
+CHEST_Y = 1022
+CHEST_Z = 0
+CHEST_ID = 0x4001d9b5  # Container ID deiner Truhe (ersetzen!)
+
+# Arbeitsbereich Start/Ende und Feldgröße
+AREA_START_X = 1872
+AREA_START_Y = 1036
+AREA_START_Z = 0
+AREA_END_X = 1904
+AREA_END_Y = 1118
+AREA_END_Z = 0
+FIELD_SIZE = 10
+
+LOG_EXPIRATION_MS = 10 * 60 * 1000  # 10 Minuten gültigkeit für Baum-Logs
+
+# === VARIABLEN ===
+packCount = 0
+chopped_trees = 0
+collected_logs = 0
+last_x = None
+last_y = None
+current_area_index = 0
+
+# Arbeitsbereiche generieren (Liste von dicts mit x,y,z)
+areas = []
+
+def init_areas():
+    global areas
+    areas = []
+    x = AREA_START_X
+    while x <= AREA_END_X:
+        y = AREA_START_Y
+        while y <= AREA_END_Y:
+            areas.append({'X': x, 'Y': y, 'Z': AREA_START_Z})
+            y += FIELD_SIZE
+        x += FIELD_SIZE
+
+init_areas()
+
+# Baum-Logfile Pfad
+LOGFILE_PATH = "scripts/tree_log.txt"
+
+# === HILFSFUNKTIONEN ===
+
+def distance(x1, y1, x2, y2):
+    dx = x1 - x2
+    dy = y1 - y2
+    return (dx*dx + dy*dy)**0.5
+
+def write_tree_log(x, y):
+    timestamp = int(time.time() * 1000)  # ms seit Epoch
+    line = "%d;%d;%d\n" % (x, y, timestamp)
+    try:
+        f = open(LOGFILE_PATH, "a")
+        f.write(line)
+        f.close()
+    except:
+        HeadMsg("Fehler beim Schreiben des Baum-Logs", "self", 33)
+
+def read_tree_log():
+    now = int(time.time() * 1000)
+    valid_entries = {}
+    try:
+        f = open(LOGFILE_PATH, "r")
+        lines = f.readlines()
+        f.close()
+    except:
+        return valid_entries
+
+    for line in lines:
+        try:
+            parts = line.strip().split(";")
+            x = int(parts[0])
+            y = int(parts[1])
+            ts = int(parts[2])
+            if now - ts <= LOG_EXPIRATION_MS:
+                valid_entries[(x,y)] = ts
+        except:
+            pass
+    return valid_entries
+
+def clear_old_logs():
+    entries = read_tree_log()
+    try:
+        f = open(LOGFILE_PATH, "w")
+        for (x,y), ts in entries.items():
+            f.write("%d;%d;%d\n" % (x, y, ts))
+        f.close()
+    except:
+        HeadMsg("Fehler beim Bereinigen der Baum-Logs", "self", 33)
+        
+def move_to_position_with_steps(target_x, target_y, target_z):
+    current_x = Engine.Player.X
+    current_y = Engine.Player.Y
+    attempts = 0
+
+    while True:
+        dist = distance(current_x, current_y, target_x, target_y)
+        if dist <= MAX_DIST_TO_CHEST:
+            Pathfind(target_x, target_y, target_z)
+            SetTimer("walkreturn")
+            while Timer("walkreturn") < 30000:
+                if X("self") == target_x and Y("self") == target_y:
+                    return True
+                Pause(250)
+            # Falls keine Bewegung innerhalb 30s, versuchen ausweichen
+            attempts += 1
+            if attempts >= 3:
+                HeadMsg("Kann Ziel nicht erreichen.", "self", 33)
+                return False
+            # Ausweichbewegung
+            HeadMsg("Bewegung blockiert, versuche Ausweichschritt", "self", 33)
+            Walk("north")
+            Pause(500)
+            current_x = X("self")
+            current_y = Y("self")
+        else:
+            dx = target_x - current_x
+            dy = target_y - current_y
+            length = (dx * dx + dy * dy) ** 0.5
+            step_x = int(current_x + (dx / length) * STEP_SIZE)
+            step_y = int(current_y + (dy / length) * STEP_SIZE)
+
+            HeadMsg("Laufe zu Zwischenziel (%d, %d)" % (step_x, step_y), "self", 33)
+            Pathfind(step_x, step_y, target_z)
+            SetTimer("walkstep")
+            moved = False
+            while Timer("walkstep") < 15000:
+                if X("self") == step_x and Y("self") == step_y:
+                    moved = True
+                    break
+                Pause(250)
+
+            if not moved:
+                HeadMsg("Bewegung blockiert, versuche Ausweichschritt", "self", 33)
+                Walk("east")
+                Pause(500)
+
+            current_x = X("self")
+            current_y = Y("self")
+
+def move_to_chest_with_steps():
+    return move_to_position_with_steps(CHEST_X, CHEST_Y, CHEST_Z)
+
+def GetNearestTrees():
+    trees = []
+    player_x = Engine.Player.X
+    player_y = Engine.Player.Y
+    statics_map = Convert.ChangeType(Engine.Player.Map, int)
+    for x in range(player_x - MAX_RANGE, player_x + MAX_RANGE + 1):
+        for y in range(player_y - MAX_RANGE, player_y + MAX_RANGE + 1):
+            statics = Statics.GetStatics(statics_map, x, y)
+            if statics is None:
+                continue
+            for s in statics:
+                if s.Name and "tree" in s.Name.lower():
+                    trees.append({'X': s.X, 'Y': s.Y})
+    return trees
+
+def moveToPackAnimal():
+    global packCount
+    if not packAnimals:
+        return
+    pack = packAnimals[packCount]
+    HeadMsg("Bewege Logs zu Packtier: 0x%X" % pack, "self", 33)
+    for log in logs:
+        while FindType(log, -1, 'backpack'):
+            MoveItem("found", pack)
+            Pause(1000)
+            if not FindType(log, -1, 'backpack'):
+                break
+    packCount = (packCount + 1) % len(packAnimals)
+
+def moveToTree(tree):
+    attempts = 0
+    while (X("self") != tree['X'] or Y("self") != tree['Y']):
+        if attempts >= 5:
+            HeadMsg("Pfad nicht gefunden – überspringe Baum.", "self", 33)
+            return False
+        Pathfind(tree['X'], tree['Y'], 0)
+        Pause(2000)
+        attempts += 1
+    return True
+
+def unload_to_chest():
+    global last_x, last_y
+
+    HeadMsg("Gewicht erreicht – zurück zur Truhe.", "self", 33)
+
+    last_x = X("self")
+    last_y = Y("self")
+
+    if not move_to_chest_with_steps():
+        HeadMsg("Konnte nicht zur Truhe laufen.", "self", 33)
+        return
+
+    HeadMsg("Ankunft an Truhe – entlade Logs...", "self", 50)
+
+    for log in logs:
+        while FindType(log, -1, 'backpack'):
+            MoveItem("found", CHEST_ID)
+            Pause(1000)
+
+    HeadMsg("Logs entladen. Kehre zurück zum letzten Standort...", "self", 65)
+
+    if last_x is not None and last_y is not None:
+        move_to_position_with_steps(last_x, last_y, 0)
+
+def wait_for_chop_result(timeout_ms=15000):
+    SetTimer("chop_result")
+    while Timer("chop_result") < timeout_ms:
+        if InJournal("You put the logs"):
+            ClearJournal()
+            return "success"
+        elif InJournal("There are no logs left"):
+            ClearJournal()
+            return "empty"
+        elif InJournal("You hack at the tree"):
+            ClearJournal()
+            return "fail"
+        elif InJournal("You can't reach that"):
+            ClearJournal()
+            return "invalid"
+        elif InJournal("You can't think of a way"):
+            ClearJournal()
+            return "nopath"
+        Pause(50)
+    return "timeout"
+
+def lumberjack_once():
+    ClearJournal()
+    UseLayer("TwoHanded")
+    if not WaitForTarget(1000):
+        return "invalid"
+    TargetTileOffsetResource(-1, 0, 0)
+    return wait_for_chop_result()
+
+def show_progress():
+    skill = round(Skill("Lumberjacking") - 1.8, 1)
+    HeadMsg("Skill: %.1f | Bäume: %d | Logs: %d" % (skill, chopped_trees, collected_logs), "self", 88)
+
+# === MAIN ===
+def lumberjack():
+    global chopped_trees, collected_logs, current_area_index
+
+    clear_old_logs()
+    init_areas()
+
+    while True:
+        if current_area_index >= len(areas):
+            current_area_index = 0  # Zurück zum ersten Bereich
+
+        area = areas[current_area_index]
+        HeadMsg("Arbeitsbereich %d von %d: (%d,%d)" % (current_area_index+1, len(areas), area['X'], area['Y']), "self", 33)
+
+        # Charakter zum Bereich laufen
+        if not move_to_position_with_steps(area['X'], area['Y'], area['Z']):
+            HeadMsg("Kann Arbeitsbereich nicht erreichen, nächster Bereich...", "self", 33)
+            current_area_index = (current_area_index + 1) % len(areas)
+            continue
+
+        trees = GetNearestTrees()
+        logs_in_area = read_tree_log()
+
+        # Filtere Bäume, die in Log sind (noch nicht alt genug)
+        filtered_trees = []
+        for tree in trees:
+            tx = tree['X']
+            ty = tree['Y']
+            if (tx, ty) in logs_in_area:
+                continue
+            filtered_trees.append(tree)
+
+        if len(filtered_trees) == 0:
+            HeadMsg("Keine neuen Bäume im Bereich.", "self", 33)
+            current_area_index = (current_area_index + 1) % len(areas)
+            Pause(5000)
+            continue
+
+        for tree in filtered_trees:
+            tree['X'] += 1  # Optionaler Offset
+
+            if Weight() >= MAX_WEIGHT:
+                unload_to_chest()
+
+            if not moveToTree(tree):
+                write_tree_log(tree['X'], tree['Y'])  # Baum blockiert/nopath
+                continue
+
+            while True:
+                if Weight() >= MAX_WEIGHT:
+                    unload_to_chest()
+                    break
+
+                result = lumberjack_once()
+
+                if result == "success":
+                    HeadMsg("Holz gehackt!", "self", 65)
+                    collected_logs += 1
+                    write_tree_log(tree['X'], tree['Y'])
+
+                elif result == "fail":
+                    HeadMsg("Noch kein Holz – weiter hacken...", "self", 50)
+                    Pause(800)
+
+                elif result == "empty":
+                    HeadMsg("Baum leer – weiter.", "self", 45)
+                    chopped_trees += 1
+                    write_tree_log(tree['X'], tree['Y'])
+                    break
+
+                elif result == "invalid":
+                    HeadMsg("Kann Baum nicht erreichen.", "self", 44)
+                    write_tree_log(tree['X'], tree['Y'])
+                    break
+
+                elif result == "nopath":
+                    HeadMsg("Kein Pfad zum Baum gefunden.", "self", 44)
+                    write_tree_log(tree['X'], tree['Y'])
+                    break
+
+                elif result == "timeout":
+                    HeadMsg("Timeout – kein Ergebnis erhalten.", "self", 33)
+                    write_tree_log(tree['X'], tree['Y'])
+                    break
+
+                else:
+                    HeadMsg("Unbekannter Status: %s" % result, "self", 33)
+                    write_tree_log(tree['X'], tree['Y'])
+                    break
+
+                if Timer("progress") >= PROGRESS_INTERVAL:
+                    show_progress()
+                    SetTimer("progress")
+
+            if dropLogs:
+                for log in logs:
+                    while FindType(log, -1, 'backpack'):
+                        MoveItemOffset("found", 0, 1, 0, -1)
+                        Pause(1000)
+
+            if moveLogsToPackAnimal:
+                moveToPackAnimal()
+
+            Pause(500)
+
+        current_area_index = (current_area_index + 1) % len(areas)
+
+# === START ===
+lumberjack()

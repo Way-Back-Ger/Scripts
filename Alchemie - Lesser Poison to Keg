@@ -1,0 +1,39 @@
+# ===============================================================
+# ClassicAssist Alchemie Script
+# Herstellung von Lesser Poison und abfüllung in Keg's 
+#
+# Insofern nicht gewünscht die "SysMessage" durch # Auskommentieren
+# 
+# © 2025 Unbekannter Autor
+# ===============================================================
+
+from Assistant import Engine
+
+SysMessage("Start -----------------")
+
+if FindType(0xf88, 0, 0x40045f32):					### Beutel mit Inhalt für Gesamtmenge Nightshade
+    N = Engine.Items.GetItem(GetAlias('found'))
+    MoveItem(N, 'backpack', 2)
+WaitForTarget(500)
+
+if FindType(0xf88, 0, 'backpack'):
+    N2 = Engine.Items.GetItem(GetAlias('found'))
+    UseObject(N2)
+WaitForTarget(9000)
+
+SysMessage("[DEBUG]:UseObject")
+
+if FindType(0x1940, 0, 'backpack'):					### Keg im Backpack
+    SysMessage("[DEBUG]:FindType")
+    keg = Engine.Items.GetItem(GetAlias('found'))
+    SysMessage(str(keg))
+    UseObject(keg)
+WaitForTarget(500)
+
+SysMessage("Fill potion in keg -----------------")
+
+if FindType(0xF0A, 0, 'backpack'):					### Lesser Poison im Backpack
+    item = Engine.Items.GetItem(GetAlias('found'))
+    SysMessage(str(item))
+    Target(item)
+WaitForTarget(500)

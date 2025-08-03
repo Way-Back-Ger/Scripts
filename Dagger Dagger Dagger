@@ -1,0 +1,68 @@
+# ---------------------------------------------------------------------------------------------------------------------------------------------
+# Ziel: Den Schmiedeprozess in UO ClassicUO mit ClassicAssist vollständig automatisieren,
+# bis keine Eisenbarren mehr vorhanden sind. Erfolg, Misserfolg und Timeouts werden behandelt.
+
+IRON_INGOT_ID = 0x1bef      # Eisenbarren
+DAGGER_ID = 0x0f51          # Dagger
+SUCCESS_MESSAGE = "You put the dagger in your pack"
+FAILURE_MESSAGE = "You have failed to make anything"
+FORGE_ID = 0x40115ec0       # Amboss-ID (anpassen, falls nötig)
+
+# --- Ergebnisfunktion mit Timeout ---
+def wait_for_smithing_result(timeout_ms=15000):
+    SetTimer("smith_result")
+    while Timer("smith_result") < timeout_ms:
+        if InJournal(SUCCESS_MESSAGE):
+            ClearJournal()
+            return "success"
+        elif InJournal(FAILURE_MESSAGE):
+            ClearJournal()
+            return "fail"
+        Pause(50)
+    return "timeout"
+
+# --- Hauptschleife ---
+crafted_count = 0  # Zähler für erfolgreich hergestellte Items
+
+while FindType(IRON_INGOT_ID, -1, "backpack"):
+    SysMessage("Starte neuen Schmiedevorgang ...")
+
+    UseObject("found")    # Eisenbarren benutzen, öffnet Crafting-Menü
+
+    if not WaitForMenu(0x13a0, 5000):
+        SysMessage("Crafting-Menü nicht gefunden. Skript wird beendet.")
+        break
+
+    # Kategorie 'Bladed Weapons' auswählen
+    ReplyMenu(0x13a0, 3, 0x13b9, 0)
+    if not WaitForMenu(0x13a0, 5000):
+        SysMessage("Menü 'Bladed Weapons' konnte nicht geöffnet werden.")
+        break
+
+    # Unterkategorie 'Daggers' auswählen
+    ReplyMenu(0x13a0, 1, 0x13ba, 0)
+    if not WaitForMenu(0x13a0, 5000):
+        SysMessage("Menü 'Daggers' konnte nicht geöffnet werden.")
+        break
+
+    # Journal leeren und Dagger auswählen
+    ClearJournal()
+    ReplyMenu(0x13a0, 3, DAGGER_ID, 0)
+
+    # Ergebnis abwarten
+    result = wait_for_smithing_result()
+
+    if result == "success":
+        crafted_count += 1
+        if crafted_count == 90:
+            SysMessage("90 Dagger hergestellt – Verkauf wird ausgelöst.")
+            HeadMsg("Dagger verkaufen!", 66)
+    elif result == "fail":
+        SysMessage("Schmiedeprozess fehlgeschlagen.")
+    elif result == "timeout":
+        SysMessage("Keine Rückmeldung vom Spiel erhalten. Timeout.")
+
+    Pause(500)  # kurze Pause für Stabilität
+
+# --- Keine Eisenbarren mehr ---
+SysMessage("Keine Eisenbarren mehr im Rucksack. Skript beendet.")
